@@ -85,6 +85,38 @@
 		};
 	};
 
+	reg_ov8865_avdd: ov8865-avdd {
+		compatible = "regulator-fixed";
+		regulator-name = "ov8865-avdd";
+		regulator-min-microvolt = <2800000>;
+		regulator-max-microvolt = <2800000>;
+		vin-supply = <&reg_dldo4>;
+	};
+
+	reg_ov8865_dovdd: ov8865-dovdd {
+		compatible = "regulator-fixed";
+		regulator-name = "ov8865-dovdd";
+		regulator-min-microvolt = <2800000>;
+		regulator-max-microvolt = <2800000>;
+		vin-supply = <&reg_dldo4>;
+	};
+
+	reg_ov8865_afvdd: ov8865-afvdd {
+		compatible = "regulator-fixed";
+		regulator-name = "ov8865-afvdd";
+		regulator-min-microvolt = <2800000>;
+		regulator-max-microvolt = <2800000>;
+		vin-supply = <&reg_dldo4>;
+	};
+
+	reg_ov8865_vdd2: ov8865-vdd2 {
+		compatible = "regulator-fixed";
+		regulator-name = "ov8865-vdd2";
+		regulator-min-microvolt = <1200000>;
+		regulator-max-microvolt = <1200000>;
+		vin-supply = <&reg_eldo1>;
+	};
+
 	reg_usb1_vbus: reg-usb1-vbus {
 		compatible = "regulator-fixed";
 		regulator-name = "usb1-vbus";
@@ -115,8 +147,52 @@
 	cpu-supply = <&reg_dcdc3>;
 };
 
+&csi {
+	status = "okay";
+};
+
+&csi_in {
+	mipi_csi2_from_ov8865: endpoint {
+		remote-endpoint = <&ov8865_to_mipi_csi2>;
+		clock-lanes = <0>;
+		data-lanes = <1 2 3 4>;
+		bus-type = <4>;
+	};
+};
+
 &de {
 	status = "okay";
+};
+
+&i2c2 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&i2c2_pe_pins>;
+	status = "okay";
+
+	ov8865: camera@36 {
+		compatible = "ovti,ov8865";
+		reg = <0x36>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&csi_mclk_pin>;
+		clocks = <&ccu CLK_CSI_MCLK>;
+		clock-names ="xclk";
+		avdd-supply = <&reg_ov8865_avdd>;
+		dovdd-supply = <&reg_ov8865_dovdd>;
+		vdd2-supply = <&reg_ov8865_vdd2>;
+		afvdd-supply = <&reg_ov8865_afvdd>;
+		powerdown-gpios = <&pio 4 17 GPIO_ACTIVE_LOW>; /* PE17 */
+		reset-gpios = <&pio 4 16 GPIO_ACTIVE_LOW>; /* PE16 */
+		rotation = <180>;
+
+		port {
+			ov8865_to_mipi_csi2: endpoint {
+				remote-endpoint = <&mipi_csi2_from_ov8865>;
+				data-lanes = <1 2 3 4>;
+				clock-lanes = <0>;
+				bus-type = <4>; /* V4L2_FWNODE_BUS_TYPE_CSI2_DPHY */
+			};
+		};
+	};
 };
 
 &ehci0 {
@@ -327,9 +403,22 @@
 	regulator-name = "vcc-pd";
 };
 
+&reg_dldo4 {
+	regulator-always-on;
+	regulator-min-microvolt = <2800000>;
+	regulator-max-microvolt = <2800000>;
+	regulator-name = "avdd-csi";
+};
+
 &reg_drivevbus {
 	regulator-name = "usb0-vbus";
 	status = "okay";
+};
+
+&reg_eldo1 {
+	regulator-min-microvolt = <1200000>;
+	regulator-max-microvolt = <1200000>;
+	regulator-name = "dvdd-csi-r";
 };
 
 &reg_fldo1 {
