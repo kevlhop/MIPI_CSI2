@@ -26,6 +26,7 @@
 
 #include "sun6i_csi.h"
 #include "sun6i_csi_reg.h"
+#include "sun8i_a83t_mipi_csi2.h"
 
 #define MODULE_NAME	"sun6i-csi"
 
@@ -160,10 +161,14 @@ int sun6i_csi_set_power(struct sun6i_csi *csi, bool enable)
 		regmap_update_bits(regmap, CSI_EN_REG, CSI_EN_CSI_EN, 0);
 
 		clk_disable_unprepare(sdev->clk_ram);
+
 		if (of_device_is_compatible(dev->of_node,
 					    "allwinner,sun50i-a64-csi"))
 			clk_rate_exclusive_put(sdev->clk_mod);
 		clk_disable_unprepare(sdev->clk_mod);
+		if (csi->v4l2_ep.bus_type == V4L2_MBUS_CSI2_DPHY)
+			sun6i_mipi_csi_clk_disable(csi);
+
 		reset_control_assert(sdev->rstc_bus);
 		return 0;
 	}
@@ -189,10 +194,18 @@ int sun6i_csi_set_power(struct sun6i_csi *csi, bool enable)
 		goto clk_ram_disable;
 	}
 
+	if (csi->v4l2_ep.bus_type == V4L2_MBUS_CSI2_DPHY) {
+		ret = sun6i_mipi_csi_clk_enable(csi);
+		if (ret)
+			goto reset_control_assert;
+	}
+
 	regmap_update_bits(regmap, CSI_EN_REG, CSI_EN_CSI_EN, CSI_EN_CSI_EN);
 
 	return 0;
 
+reset_control_assert:
+	reset_control_assert(sdev->rstc_bus);
 clk_ram_disable:
 	clk_disable_unprepare(sdev->clk_ram);
 clk_mod_disable:
@@ -421,27 +434,34 @@ static void sun6i_csi_setup_bus(struct sun6i_csi_dev *sdev)
 		if (flags & V4L2_MBUS_PCLK_SAMPLE_FALLING)
 			cfg |= CSI_IF_CFG_CLK_POL_FALLING_EDGE;
 		break;
+	case V4L2_MBUS_CSI2_DPHY:
+		cfg |= CSI_IF_CFG_MIPI_IF_MIPI;
+		sun6i_mipi_csi_setup_bus(csi);
+		break;
 	default:
 		dev_warn(sdev->dev, "Unsupported bus type: %d\n",
 			 endpoint->bus_type);
 		break;
 	}
 
-	switch (bus_width) {
-	case 8:
-		cfg |= CSI_IF_CFG_IF_DATA_WIDTH_8BIT;
-		break;
-	case 10:
-		cfg |= CSI_IF_CFG_IF_DATA_WIDTH_10BIT;
-		break;
-	case 12:
-		cfg |= CSI_IF_CFG_IF_DATA_WIDTH_12BIT;
-		break;
-	case 16: /* No need to configure DATA_WIDTH for 16bit */
-		break;
-	default:
-		dev_warn(sdev->dev, "Unsupported bus width: %u\n", bus_width);
-		break;
+	/* Bus width only applies to parallel bus. */
+	if (endpoint->bus_type != V4L2_MBUS_CSI2_DPHY) {
+		switch (bus_width) {
+		case 8:
+			cfg |= CSI_IF_CFG_IF_DATA_WIDTH_8BIT;
+			break;
+		case 10:
+			cfg |= CSI_IF_CFG_IF_DATA_WIDTH_10BIT;
+			break;
+		case 12:
+			cfg |= CSI_IF_CFG_IF_DATA_WIDTH_12BIT;
+			break;
+		case 16: /* No need to configure DATA_WIDTH for 16bit */
+			break;
+		default:
+			dev_warn(sdev->dev, "Unsupported bus width: %u\n", bus_width);
+			break;
+		}
 	}
 
 	regmap_write(sdev->regmap, CSI_IF_CFG_REG, cfg);
@@ -593,6 +613,9 @@ void sun6i_csi_set_stream(struct sun6i_csi *csi, bool enable)
 	struct regmap *regmap = sdev->regmap;
 
 	if (!enable) {
+		if (csi->v4l2_ep.bus_type == V4L2_MBUS_CSI2_DPHY)
+			sun6i_mipi_csi_set_stream(csi, 0);
+
 		regmap_update_bits(regmap, CSI_CAP_REG, CSI_CAP_CH0_VCAP_ON, 0);
 		regmap_write(regmap, CSI_CH_INT_EN_REG, 0);
 		return;
@@ -609,6 +632,9 @@ void sun6i_csi_set_stream(struct sun6i_csi *csi, bool enable)
 
 	regmap_update_bits(regmap, CSI_CAP_REG, CSI_CAP_CH0_VCAP_ON,
 			   CSI_CAP_CH0_VCAP_ON);
+
+	if (csi->v4l2_ep.bus_type == V4L2_MBUS_CSI2_DPHY)
+		sun6i_mipi_csi_set_stream(csi, 1);
 }
 
 /* -----------------------------------------------------------------------------
@@ -685,6 +711,7 @@ static int sun6i_csi_fwnode_parse(struct device *dev,
 				  struct v4l2_async_subdev *asd)
 {
 	struct sun6i_csi *csi = dev_get_drvdata(dev);
+	struct sun6i_csi_dev *sdev = sun6i_csi_to_dev(csi);
 
 	if (vep->base.port || vep->base.id) {
 		dev_warn(dev, "Only support a single port with one endpoint\n");
@@ -692,6 +719,17 @@ static int sun6i_csi_fwnode_parse(struct device *dev,
 	}
 
 	switch (vep->bus_type) {
+	case V4L2_MBUS_CSI2_DPHY:
+		if (!sdev->clk_mipi) {
+			dev_err(sdev->dev, "Use MIPI-CSI2 device with no MIPI clock\n");
+			return -ENOTCONN;
+		}
+		if (!sdev->clk_misc) {
+			dev_err(sdev->dev, "Use MIPI-CSI2 device with no misc clock\n");
+			return -ENOTCONN;
+		}
+		csi->v4l2_ep = *vep;
+		return 0;
 	case V4L2_MBUS_PARALLEL:
 	case V4L2_MBUS_BT656:
 		csi->v4l2_ep = *vep;
@@ -812,12 +850,13 @@ static const struct regmap_config sun6i_csi_regmap_config = {
 	.reg_bits       = 32,
 	.reg_stride     = 4,
 	.val_bits       = 32,
-	.max_register	= 0x9c,
+	.max_register	= 0x2000,
 };
 
 static int sun6i_csi_resource_request(struct sun6i_csi_dev *sdev,
 				      struct platform_device *pdev)
 {
+	struct device *dev = sdev->dev;
 	struct resource *res;
 	void __iomem *io_base;
 	int ret;
@@ -847,6 +886,19 @@ static int sun6i_csi_resource_request(struct sun6i_csi_dev *sdev,
 		return PTR_ERR(sdev->clk_ram);
 	}
 
+	if (of_device_is_compatible(dev->of_node, "allwinner,sun8i-a83t-csi")) {
+		sdev->clk_mipi = devm_clk_get(&pdev->dev, "mipi");
+		if (IS_ERR(sdev->clk_mipi)) {
+			sdev->clk_mipi = NULL;
+			dev_warn(&pdev->dev, "Unable to acquire mipi clock. No mipi support\n");
+		}
+
+		sdev->clk_misc = devm_clk_get(&pdev->dev, "misc");
+		if (IS_ERR(sdev->clk_misc)) {
+			sdev->clk_misc = NULL;
+			dev_warn(&pdev->dev, "Unable to acquire misc clock. No mipi support\n");
+		}
+	}
 	sdev->rstc_bus = devm_reset_control_get_shared(&pdev->dev, NULL);
 	if (IS_ERR(sdev->rstc_bus)) {
 		dev_err(&pdev->dev, "Cannot get reset controller\n");
