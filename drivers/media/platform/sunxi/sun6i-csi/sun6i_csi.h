@@ -48,6 +48,18 @@ struct sun6i_csi {
 	struct sun6i_video		video;
 };
 
+struct sun6i_csi_dev {
+	struct sun6i_csi	csi;
+	struct device		*dev;
+	struct regmap		*regmap;
+	struct clk		*clk_mod;
+	struct clk		*clk_ram;
+	struct clk		*clk_mipi;
+	struct clk		*clk_misc;
+	struct reset_control	*rstc_bus;
+	int			planar_offset[3];
+};
+
 /**
  * sun6i_csi_is_format_supported() - check if the format supported by csi
  * @csi:	pointer to the csi
